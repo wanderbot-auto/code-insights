@@ -1,0 +1,8 @@
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.code_insights/
+code-insights-output/
+*.pyc
+*.pyo
+*.pyd
