@@ -77,7 +77,8 @@ def test_file_change_monitor_initializes_and_polls(tmp_path: Path) -> None:
     assert initial["interval"]["files_changed"] == 0
     assert "radar" in initial
     assert len(initial["radar"]["rhythm"]) >= 1
-    assert initial["radar"]["recent_window_seconds"] == 5
+    assert initial["radar"]["recent_window_seconds"] == monitor_module.DEFAULT_RECENT_CHANGES_WINDOW_SECONDS
+    assert initial["radar"]["recent_repeat_threshold"] == monitor_module.DEFAULT_RECENT_REPEAT_THRESHOLD
 
     (repo / "a.py").write_text("x = 1\n\ny = 2\n", encoding="utf-8")
     (repo / "b.js").unlink()
@@ -138,3 +139,110 @@ def test_build_monitor_settings_agent_profile_is_less_sensitive() -> None:
     assert agent.alert_file_churn_threshold > balanced.alert_file_churn_threshold
     assert agent.alert_removed_lines_threshold > balanced.alert_removed_lines_threshold
     assert agent.alert_single_file_delta_threshold > balanced.alert_single_file_delta_threshold
+
+
+def test_recent_changes_view_aggregates_repeat_count_by_path(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
+
+    monitor = FileChangeMonitor(repo, interval_seconds=3)
+    monitor.initialize()
+    monitor._recent_change_events = [  # type: ignore[attr-defined]
+        {
+            "at": "2026-01-01T00:00:03+00:00",
+            "ts": 3.0,
+            "path": "a.py",
+            "delta_total": 1,
+            "delta_effective": 1,
+            "added_total": 1,
+            "removed_total": 0,
+            "added_effective": 1,
+            "removed_effective": 0,
+            "kind": "modified",
+        },
+        {
+            "at": "2026-01-01T00:00:02+00:00",
+            "ts": 2.0,
+            "path": "b.py",
+            "delta_total": 1,
+            "delta_effective": 1,
+            "added_total": 1,
+            "removed_total": 0,
+            "added_effective": 1,
+            "removed_effective": 0,
+            "kind": "added",
+        },
+        {
+            "at": "2026-01-01T00:00:01+00:00",
+            "ts": 1.0,
+            "path": "a.py",
+            "delta_total": 2,
+            "delta_effective": 2,
+            "added_total": 2,
+            "removed_total": 0,
+            "added_effective": 2,
+            "removed_effective": 0,
+            "kind": "modified",
+        },
+    ]
+    monitor._recent_change_history = [  # type: ignore[attr-defined]
+        {
+            "at": "2026-01-01T00:00:03+00:00",
+            "ts": 3.0,
+            "path": "a.py",
+            "delta_total": 1,
+            "delta_effective": 1,
+            "added_total": 1,
+            "removed_total": 0,
+            "added_effective": 1,
+            "removed_effective": 0,
+            "kind": "modified",
+        },
+        {
+            "at": "2026-01-01T00:00:02+00:00",
+            "ts": 2.0,
+            "path": "b.py",
+            "delta_total": 1,
+            "delta_effective": 1,
+            "added_total": 1,
+            "removed_total": 0,
+            "added_effective": 1,
+            "removed_effective": 0,
+            "kind": "added",
+        },
+    ]
+
+    view = monitor._build_recent_changes_view()  # type: ignore[attr-defined]
+    by_path = {str(item["path"]): item for item in view}
+    assert by_path["a.py"]["repeat_count"] == 2
+    assert by_path["b.py"]["repeat_count"] == 1
+
+
+def test_recent_changes_view_keeps_recent_history_when_window_is_empty(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
+
+    monitor = FileChangeMonitor(repo, interval_seconds=3)
+    monitor.initialize()
+    monitor._recent_change_events = []  # type: ignore[attr-defined]
+    monitor._recent_change_history = [  # type: ignore[attr-defined]
+        {
+            "at": "2026-01-01T00:00:03+00:00",
+            "ts": 3.0,
+            "path": "a.py",
+            "delta_total": 1,
+            "delta_effective": 1,
+            "added_total": 1,
+            "removed_total": 0,
+            "added_effective": 1,
+            "removed_effective": 0,
+            "kind": "modified",
+        }
+    ]
+
+    view = monitor._build_recent_changes_view()  # type: ignore[attr-defined]
+    assert len(view) == 1
+    assert view[0]["path"] == "a.py"
+    assert view[0]["repeat_count"] == 1

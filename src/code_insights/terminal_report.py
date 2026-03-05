@@ -28,7 +28,8 @@ WAFFLE_TARGET_LOGICAL_ROWS = 8
 WAFFLE_CELL = "■"
 WAFFLE_H_GAP = ""
 WAFFLE_V_GAP_LINES = 0
-TOP_PANEL_HEIGHT = 19
+TOP_PANEL_MIN_HEIGHT = 15
+TOP_PANEL_MAX_HEIGHT = 18
 DEFAULT_LANG = "zh"
 
 TRANSLATIONS = {
@@ -76,7 +77,7 @@ TRANSLATIONS = {
         "changed_col": "变更文件",
         "this_cycle": "本轮",
         "cumulative": "累计",
-        "rhythm_300s": "节奏 300s",
+        "rhythm_300s": "近5min变化",
         "latest_5s_net": "最近5s净变化",
         "activity": "活动",
         "target": "目标",
@@ -136,7 +137,7 @@ TRANSLATIONS = {
         "changed_col": "Changed",
         "this_cycle": "This Cycle",
         "cumulative": "Cumulative",
-        "rhythm_300s": "Rhythm 300s",
+        "rhythm_300s": "5m Trend",
         "latest_5s_net": "Latest 5s Net",
         "activity": "Activity",
         "target": "Target",
@@ -204,17 +205,32 @@ def _build_dashboard(
     terminal_width: int | None,
     labels: dict[str, str],
 ) -> Group:
+    language_segments = _build_segments(
+        language_stats,
+        label_key="language",
+        value_key="total_lines",
+        limit=6,
+        other_label=labels["other"],
+    )
+    top_panel_height = _calculate_top_panel_height(len(language_segments))
+
     lower_grid = Table.grid(expand=True, padding=0)
     lower_grid.add_column(ratio=1)
     lower_grid.add_column(ratio=1)
     lower_grid.add_row(
         Group(
-            _build_language_panel(language_stats, terminal_width=terminal_width, labels=labels),
+            _build_language_panel(
+                language_segments,
+                terminal_width=terminal_width,
+                labels=labels,
+                panel_height=top_panel_height,
+            ),
             _build_largest_files_panel(largest_files, labels=labels),
         ),
         _build_merged_monitor_panel(
             monitor_state=monitor_state,
             largest_files=largest_files,
+            top_panel_height=top_panel_height,
             labels=labels,
         ),
     )
@@ -320,18 +336,12 @@ def _build_totals_panel(
 
 
 def _build_language_panel(
-    language_stats: list[dict[str, object]],
+    segments: list[dict[str, object]],
     *,
     terminal_width: int | None,
     labels: dict[str, str],
+    panel_height: int,
 ) -> Panel:
-    segments = _build_segments(
-        language_stats,
-        label_key="language",
-        value_key="total_lines",
-        limit=6,
-        other_label=labels["other"],
-    )
     if not segments:
         return Panel(
             labels["no_source_files_detected"],
@@ -339,7 +349,7 @@ def _build_language_panel(
             box=box.ROUNDED,
             border_style="cyan",
             padding=(0, 1),
-            height=TOP_PANEL_HEIGHT,
+            height=panel_height,
         )
 
     waffle_cols, waffle_rows = _waffle_geometry(terminal_width)
@@ -363,7 +373,7 @@ def _build_language_panel(
         box=box.ROUNDED,
         border_style="cyan",
         padding=(0, 1),
-        height=TOP_PANEL_HEIGHT,
+        height=panel_height,
     )
 
 
@@ -386,7 +396,7 @@ def _waffle_geometry(terminal_width: int | None) -> tuple[int, int]:
 def _build_largest_files_panel(largest_files: list[dict[str, object]], *, labels: dict[str, str]) -> Panel:
     table = Table(box=box.SIMPLE, expand=True, show_header=True, padding=(0, 1), collapse_padding=True)
     table.add_column(labels["file_col"], no_wrap=True, overflow="ellipsis")
-    table.add_column(labels["stats_col"], no_wrap=True, width=16, overflow="ellipsis")
+    table.add_column(labels["stats_col"], no_wrap=True, width=14, overflow="ellipsis")
 
     if not largest_files:
         table.add_row(labels["no_source_file_data"], "-")
@@ -403,7 +413,7 @@ def _build_largest_files_panel(largest_files: list[dict[str, object]], *, labels
         total = int(row.get("total_lines", 0))
         stats = _format_stats_cell(str(row.get("language", "-")), total)
         table.add_row(
-            _format_path_cell(str(row.get("path", "-")), max_total_len=26, parent_max_len=14, name_max_len=11),
+            _format_path_cell(str(row.get("path", "-")), max_total_len=34, parent_max_len=22, name_max_len=16),
             stats,
         )
 
@@ -426,6 +436,7 @@ def _build_merged_monitor_panel(
     *,
     monitor_state: dict[str, object] | None,
     largest_files: list[dict[str, object]],
+    top_panel_height: int,
     labels: dict[str, str],
 ) -> Panel:
     content = _build_file_monitor_content(monitor_state, labels=labels)
@@ -436,7 +447,7 @@ def _build_merged_monitor_panel(
         box=box.ROUNDED,
         border_style="cyan",
         padding=(0, 1),
-        height=TOP_PANEL_HEIGHT + _largest_files_panel_height(largest_files),
+        height=top_panel_height + _largest_files_panel_height(largest_files),
     )
 
 
@@ -476,25 +487,31 @@ def _build_file_monitor_content(monitor_state: dict[str, object] | None, *, labe
 
     delta_table = Table(box=box.SIMPLE, expand=True, show_header=True, padding=(0, 1), collapse_padding=True)
     delta_table.add_column(labels["scope"], style="bold")
-    delta_table.add_column(labels["total_add_col"], justify="right")
-    delta_table.add_column(labels["total_remove_col"], justify="right")
-    delta_table.add_column(labels["effective_add_col"], justify="right")
-    delta_table.add_column(labels["effective_remove_col"], justify="right")
+    delta_table.add_column(labels["total_delta_col"], justify="right")
+    delta_table.add_column(labels["effective_delta_col"], justify="right")
     delta_table.add_column(labels["changed_col"], justify="right")
     delta_table.add_row(
         labels["this_cycle"],
-        f"[green]{_fmt_int(interval_total_metrics.get('added_lines', 0))}[/green]",
-        f"[red]{_fmt_int(interval_total_metrics.get('removed_lines', 0))}[/red]",
-        f"[green]{_fmt_int(interval_effective_metrics.get('added_lines', 0))}[/green]",
-        f"[red]{_fmt_int(interval_effective_metrics.get('removed_lines', 0))}[/red]",
+        _fmt_add_remove(
+            int(interval_total_metrics.get("added_lines", 0) or 0),
+            int(interval_total_metrics.get("removed_lines", 0) or 0),
+        ),
+        _fmt_add_remove(
+            int(interval_effective_metrics.get("added_lines", 0) or 0),
+            int(interval_effective_metrics.get("removed_lines", 0) or 0),
+        ),
         _fmt_int(interval.get("files_changed", 0)),
     )
     delta_table.add_row(
         labels["cumulative"],
-        f"[green]{_fmt_int(cumulative_total_metrics.get('added_lines', 0))}[/green]",
-        f"[red]{_fmt_int(cumulative_total_metrics.get('removed_lines', 0))}[/red]",
-        f"[green]{_fmt_int(cumulative_effective_metrics.get('added_lines', 0))}[/green]",
-        f"[red]{_fmt_int(cumulative_effective_metrics.get('removed_lines', 0))}[/red]",
+        _fmt_add_remove(
+            int(cumulative_total_metrics.get("added_lines", 0) or 0),
+            int(cumulative_total_metrics.get("removed_lines", 0) or 0),
+        ),
+        _fmt_add_remove(
+            int(cumulative_effective_metrics.get("added_lines", 0) or 0),
+            int(cumulative_effective_metrics.get("removed_lines", 0) or 0),
+        ),
         _fmt_int(cumulative.get("files_changed", 0)),
     )
 
@@ -519,7 +536,7 @@ def _build_rhythm_panel(radar: dict[str, object], *, labels: dict[str, str]) -> 
         except (TypeError, ValueError):
             continue
 
-    sparkline = _sparkline(values, width=26)
+    sparkline = _trendline(values, width=28)
     net = values[-1] if values else 0
     table = Table.grid(expand=True, padding=(0, 1))
     table.add_column(style="bold cyan", width=13)
@@ -532,61 +549,38 @@ def _build_rhythm_panel(radar: dict[str, object], *, labels: dict[str, str]) -> 
 def _build_activity_table(radar: dict[str, object], *, labels: dict[str, str]) -> Table:
     table = Table(box=box.SIMPLE, expand=True, show_header=True, padding=(0, 1), collapse_padding=True)
     recent_window = int(radar.get("recent_window_seconds", 5) or 5)
+    repeat_threshold = int(radar.get("recent_repeat_threshold", 2) or 2)
     table.add_column(labels["activity"], style="bold")
     table.add_column(labels["target"], overflow="ellipsis")
     table.add_column(labels["total_delta_col"], justify="right")
     table.add_column(labels["effective_delta_col"], justify="right")
-
-    active_data = radar.get("active_burst")
-    active = active_data if isinstance(active_data, dict) else None
-    bursts_data = radar.get("bursts", [])
-    bursts = bursts_data if isinstance(bursts_data, list) else []
 
     changes_data = radar.get("recent_changes", [])
     changes = changes_data if isinstance(changes_data, list) else []
 
     shown = 0
 
-    if active:
-        added_total = int(active.get("total_added", 0) or 0)
-        removed_total = int(active.get("total_removed", 0) or 0)
-        added_effective = int(active.get("effective_added", 0) or 0)
-        removed_effective = int(active.get("effective_removed", 0) or 0)
-        table.add_row(
-            labels["burst_active"],
-            _format_monitor_time(str(active.get("started_at", ""))),
-            _fmt_add_remove(added_total, removed_total),
-            _fmt_add_remove(added_effective, removed_effective),
-        )
-        shown += 1
-    elif bursts and isinstance(bursts[0], dict):
-        burst = bursts[0]
-        added_total = int(burst.get("total_added", 0) or 0)
-        removed_total = int(burst.get("total_removed", 0) or 0)
-        added_effective = int(burst.get("effective_added", 0) or 0)
-        removed_effective = int(burst.get("effective_removed", 0) or 0)
-        table.add_row(
-            labels["burst_recent"],
-            _format_monitor_time(str(burst.get("started_at", ""))),
-            _fmt_add_remove(added_total, removed_total),
-            _fmt_add_remove(added_effective, removed_effective),
-        )
-        shown += 1
-
-    for row in changes[:4]:
+    for row in changes:
         if not isinstance(row, dict):
             continue
         added_total = int(row.get("added_total", 0) or 0)
         removed_total = int(row.get("removed_total", 0) or 0)
         added_effective = int(row.get("added_effective", 0) or 0)
         removed_effective = int(row.get("removed_effective", 0) or 0)
+        repeat_count = int(row.get("repeat_count", 1) or 1)
+        target_time = _format_monitor_time(str(row.get("at", "")))
+        target_path = _shorten_path(str(row.get("path", "-")), max_len=14)
+        if repeat_count > repeat_threshold:
+            target_path = f"{target_path} x{repeat_count}"
         table.add_row(
             labels["change"],
-            _shorten_path(str(row.get("path", "-")), max_len=20),
+            f"{target_time} {target_path}",
             _fmt_add_remove(added_total, removed_total),
             _fmt_add_remove(added_effective, removed_effective),
         )
         shown += 1
+        if shown >= 6:
+            break
 
     if shown == 0:
         table.add_row(
@@ -704,6 +698,12 @@ def _build_legend_table(segments: list[dict[str, object]], *, label_title: str) 
     return table
 
 
+def _calculate_top_panel_height(segment_count: int) -> int:
+    clamped_segment_count = max(1, segment_count)
+    target_height = 12 + clamped_segment_count
+    return max(TOP_PANEL_MIN_HEIGHT, min(TOP_PANEL_MAX_HEIGHT, target_height))
+
+
 def _resolve_labels(lang: str | None) -> dict[str, str]:
     normalized = (lang or DEFAULT_LANG).strip().lower()
     return TRANSLATIONS.get(normalized, TRANSLATIONS[DEFAULT_LANG])
@@ -802,25 +802,68 @@ def _bar(percent: float, *, width: int, style: str) -> Text:
     return text
 
 
-def _sparkline(values: list[int], *, width: int) -> Text:
+def _trendline(values: list[int], *, width: int) -> Text:
     blocks = "▁▂▃▄▅▆▇█"
     if width <= 0:
         return Text("")
     if not values:
         return Text("·" * width, style="grey37")
 
-    series = values[-width:]
-    if len(series) < width:
-        series = [0] * (width - len(series)) + series
+    sampled = _resample_series(values, width=width)
+    smoothed = _smooth_series(sampled, radius=1)
 
-    max_abs = max(abs(v) for v in series) or 1
+    max_abs = max(abs(v) for v in smoothed) or 1
     text = Text()
-    for value in series:
-        index = int(round((abs(value) / max_abs) * (len(blocks) - 1)))
-        char = blocks[index]
-        style = "green" if value > 0 else ("red" if value < 0 else "grey37")
+    for value in smoothed:
+        level = int(round((abs(value) / max_abs) * (len(blocks) - 1)))
+        char = blocks[level]
+        if level == 0:
+            style = "grey50"
+        elif value < 0:
+            style = "red3" if level <= 3 else "red"
+        elif value > 0:
+            style = "cyan3" if level <= 3 else "bright_cyan"
+        else:
+            style = "grey50"
         text.append(char, style=style)
     return text
+
+
+def _resample_series(values: list[int], *, width: int) -> list[int]:
+    if width <= 0:
+        return []
+    if not values:
+        return [0] * width
+    if len(values) == width:
+        return list(values)
+    if len(values) < width:
+        return [0] * (width - len(values)) + list(values)
+
+    result: list[int] = []
+    n = len(values)
+    for idx in range(width):
+        start = (idx * n) // width
+        end = ((idx + 1) * n) // width
+        bucket = values[start:end] or [values[min(start, n - 1)]]
+        avg = sum(bucket) / len(bucket)
+        result.append(int(round(avg)))
+    return result
+
+
+def _smooth_series(values: list[int], *, radius: int = 1) -> list[int]:
+    if not values:
+        return []
+    if radius <= 0:
+        return list(values)
+
+    smoothed: list[int] = []
+    n = len(values)
+    for idx in range(n):
+        lo = max(0, idx - radius)
+        hi = min(n, idx + radius + 1)
+        window = values[lo:hi]
+        smoothed.append(int(round(sum(window) / len(window))))
+    return smoothed
 
 
 def _format_scanned_at(raw_value: str) -> str:

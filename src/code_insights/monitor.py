@@ -8,13 +8,19 @@ from pathlib import Path
 from code_insights.language_stats import count_total_lines, detect_language, extract_code_lines
 from code_insights.scanner import collect_source_files
 
+DEFAULT_RECENT_CHANGES_WINDOW_SECONDS = 20
+DEFAULT_RECENT_REPEAT_THRESHOLD = 2
+
 
 @dataclass(frozen=True)
 class MonitorSettings:
     profile: str = "balanced"
     rhythm_window_seconds: int = 300
     rhythm_bucket_seconds: int = 5
-    recent_changes_window_seconds: int = 5
+    recent_changes_window_seconds: int = DEFAULT_RECENT_CHANGES_WINDOW_SECONDS
+    recent_changes_view_limit: int = 6
+    recent_changes_repeat_threshold: int = DEFAULT_RECENT_REPEAT_THRESHOLD
+    recent_changes_history_limit: int = 24
     burst_history_limit: int = 8
     hotspot_view_limit: int = 6
     hotspot_dir_cap: int = 64
@@ -28,6 +34,10 @@ def build_monitor_settings(profile: str = "balanced") -> MonitorSettings:
     if normalized == "agent":
         return MonitorSettings(
             profile="agent",
+            recent_changes_window_seconds=30,
+            recent_changes_view_limit=8,
+            recent_changes_repeat_threshold=2,
+            recent_changes_history_limit=36,
             burst_history_limit=10,
             hotspot_view_limit=8,
             hotspot_dir_cap=96,
@@ -70,7 +80,8 @@ def _empty_radar() -> dict[str, object]:
         "hotspots": [],
         "alerts": [],
         "recent_changes": [],
-        "recent_window_seconds": 5,
+        "recent_window_seconds": DEFAULT_RECENT_CHANGES_WINDOW_SECONDS,
+        "recent_repeat_threshold": DEFAULT_RECENT_REPEAT_THRESHOLD,
     }
 
 
@@ -332,6 +343,7 @@ class FileChangeMonitor:
 
         self._rhythm_net_events: list[tuple[float, int]] = []
         self._recent_change_events: list[dict[str, object]] = []
+        self._recent_change_history: list[dict[str, object]] = []
         self._recent_bursts: list[dict[str, object]] = []
         self._active_burst: dict[str, object] | None = None
         self._hotspot_totals: dict[str, dict[str, int]] = {}
@@ -452,6 +464,7 @@ class FileChangeMonitor:
     def _reset_radar_runtime(self) -> None:
         self._rhythm_net_events = []
         self._recent_change_events = []
+        self._recent_change_history = []
         self._recent_bursts = []
         self._active_burst = None
         self._hotspot_totals = {}
@@ -481,6 +494,7 @@ class FileChangeMonitor:
             "alerts": alerts,
             "recent_changes": self._build_recent_changes_view(),
             "recent_window_seconds": self._settings.recent_changes_window_seconds,
+            "recent_repeat_threshold": self._settings.recent_changes_repeat_threshold,
         }
 
     def _record_rhythm_net(self, interval: dict[str, object], cycle_ts: float) -> None:
@@ -518,20 +532,20 @@ class FileChangeMonitor:
         for change in changes_list:
             if not isinstance(change, dict):
                 continue
-            self._recent_change_events.append(
-                {
-                    "at": cycle_at,
-                    "ts": cycle_ts,
-                    "path": str(change.get("path", "-")),
-                    "delta_total": int(change.get("delta_total", 0) or 0),
-                    "delta_effective": int(change.get("delta_effective", 0) or 0),
-                    "added_total": int(change.get("added_total", 0) or 0),
-                    "removed_total": int(change.get("removed_total", 0) or 0),
-                    "added_effective": int(change.get("added_effective", 0) or 0),
-                    "removed_effective": int(change.get("removed_effective", 0) or 0),
-                    "kind": str(change.get("kind", "-")),
-                }
-            )
+            event = {
+                "at": cycle_at,
+                "ts": cycle_ts,
+                "path": str(change.get("path", "-")),
+                "delta_total": int(change.get("delta_total", 0) or 0),
+                "delta_effective": int(change.get("delta_effective", 0) or 0),
+                "added_total": int(change.get("added_total", 0) or 0),
+                "removed_total": int(change.get("removed_total", 0) or 0),
+                "added_effective": int(change.get("added_effective", 0) or 0),
+                "removed_effective": int(change.get("removed_effective", 0) or 0),
+                "kind": str(change.get("kind", "-")),
+            }
+            self._recent_change_events.append(event)
+            self._remember_recent_change(event)
 
         min_ts = cycle_ts - float(self._settings.recent_changes_window_seconds)
         self._recent_change_events = [
@@ -540,11 +554,27 @@ class FileChangeMonitor:
 
     def _build_recent_changes_view(self) -> list[dict[str, object]]:
         view: list[dict[str, object]] = []
-        for row in sorted(self._recent_change_events, key=lambda item: float(item.get("ts", 0.0)), reverse=True):
+        sorted_window_events = sorted(
+            self._recent_change_events,
+            key=lambda item: float(item.get("ts", 0.0)),
+            reverse=True,
+        )
+        path_counts: dict[str, int] = {}
+        for row in sorted_window_events:
+            path = str(row.get("path", "-"))
+            path_counts[path] = int(path_counts.get(path, 0)) + 1
+
+        sorted_history = sorted(
+            self._recent_change_history,
+            key=lambda item: float(item.get("ts", 0.0)),
+            reverse=True,
+        )
+        for row in sorted_history:
+            path = str(row.get("path", "-"))
             view.append(
                 {
                     "at": str(row.get("at", "")),
-                    "path": str(row.get("path", "-")),
+                    "path": path,
                     "delta_total": int(row.get("delta_total", 0) or 0),
                     "delta_effective": int(row.get("delta_effective", 0) or 0),
                     "added_total": int(row.get("added_total", 0) or 0),
@@ -552,9 +582,22 @@ class FileChangeMonitor:
                     "added_effective": int(row.get("added_effective", 0) or 0),
                     "removed_effective": int(row.get("removed_effective", 0) or 0),
                     "kind": str(row.get("kind", "-")),
+                    "repeat_count": int(path_counts.get(path, 1)),
                 }
             )
+            if len(view) >= self._settings.recent_changes_view_limit:
+                break
         return view
+
+    def _remember_recent_change(self, event: dict[str, object]) -> None:
+        path = str(event.get("path", "-"))
+        self._recent_change_history = [
+            row for row in self._recent_change_history if str(row.get("path", "-")) != path
+        ]
+        self._recent_change_history.insert(0, dict(event))
+        self._recent_change_history = self._recent_change_history[
+            : self._settings.recent_changes_history_limit
+        ]
 
     def _new_burst(self, *, cycle_at: str) -> dict[str, object]:
         return {
