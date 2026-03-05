@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import math
 from datetime import datetime
+from pathlib import PurePosixPath
 
 from rich import box
 from rich.align import Align
-from rich.console import Group
 from rich.console import Console
+from rich.console import Group
+from rich.padding import Padding
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -20,8 +22,8 @@ PIE_COLORS = [
     "bright_red",
 ]
 
-WAFFLE_MIN_CELLS = 500
-WAFFLE_COLUMNS = 36
+WAFFLE_MIN_CELLS = 600
+WAFFLE_COLUMNS = 60
 WAFFLE_CELL = "■"
 WAFFLE_H_GAP = ""
 WAFFLE_V_GAP_LINES = 0
@@ -36,21 +38,78 @@ def render_terminal_report(analysis: dict[str, object], console: Console | None 
     language_stats = analysis.get("language_stats", [])
     structure = analysis.get("structure", {})
     largest_files = structure.get("largest_files", [])
+    top_directories = structure.get("top_directories", [])
     cache_meta = analysis.get("meta", {}).get("cache", {})
 
-    header = _build_header_panel(project)
     dashboard = _build_dashboard(
+        project=project,
         totals=totals,
         cache_meta=cache_meta,
         language_stats=language_stats,
         largest_files=largest_files,
+        top_directories=top_directories,
     )
 
-    console.print(header)
     console.print(dashboard)
 
 
-def _build_header_panel(project: dict[str, object]) -> Panel:
+def _build_dashboard(
+    *,
+    project: dict[str, object],
+    totals: dict[str, object],
+    cache_meta: dict[str, object],
+    language_stats: list[dict[str, object]],
+    largest_files: list[dict[str, object]],
+    top_directories: list[dict[str, object]],
+) -> Group:
+    language_row = Table.grid(expand=True, padding=0)
+    language_row.add_column(ratio=1)
+    language_row.add_column(ratio=1)
+    language_row.add_row(
+        _build_language_panel(language_stats),
+        _build_language_monitor_panel(language_stats),
+    )
+
+    structure_row = Table.grid(expand=True, padding=0)
+    structure_row.add_column(ratio=1)
+    structure_row.add_column(ratio=1)
+    structure_row.add_row(
+        _build_largest_files_panel(largest_files),
+        _build_structure_monitor_panel(top_directories, largest_files),
+    )
+
+    return Group(
+        _build_overview_panel(project, totals, cache_meta),
+        language_row,
+        structure_row,
+    )
+
+
+def _build_overview_panel(
+    project: dict[str, object],
+    totals: dict[str, object],
+    cache_meta: dict[str, object],
+) -> Panel:
+    content = Table.grid(expand=True, padding=1)
+    content.add_column(ratio=1)
+    content.add_column(ratio=1)
+    content.add_row(
+        _build_project_summary_panel(project),
+        _build_totals_panel(totals, cache_meta),
+    )
+
+    headline = Text("Terminal Analysis Report", style="bold cyan")
+
+    return Panel(
+        Group(Align.center(headline), content),
+        border_style="cyan",
+        box=box.ROUNDED,
+        padding=(0, 1),
+        title="[bold cyan]Overview[/bold cyan]",
+    )
+
+
+def _build_project_summary_panel(project: dict[str, object]) -> Panel:
     scanned_at = _format_scanned_at(str(project.get("scanned_at", "")))
     content = Table.grid(padding=(0, 1))
     content.add_column(style="bold")
@@ -66,25 +125,8 @@ def _build_header_panel(project: dict[str, object]) -> Panel:
         border_style="cyan",
         box=box.ROUNDED,
         padding=(0, 1),
-        title="[bold cyan]Overview[/bold cyan]",
+        title="[bold cyan]Project[/bold cyan]",
     )
-
-
-def _build_dashboard(
-    *,
-    totals: dict[str, object],
-    cache_meta: dict[str, object],
-    language_stats: list[dict[str, object]],
-    largest_files: list[dict[str, object]],
-) -> Group:
-    top_grid = Table.grid(expand=True, padding=0)
-    top_grid.add_column(ratio=1)
-    top_grid.add_column(ratio=1)
-    top_grid.add_row(
-        _build_totals_panel(totals, cache_meta),
-        _build_language_panel(language_stats),
-    )
-    return Group(top_grid, _build_largest_files_panel(largest_files))
 
 
 def _build_totals_panel(totals: dict[str, object], cache_meta: dict[str, object]) -> Panel:
@@ -124,7 +166,6 @@ def _build_totals_panel(totals: dict[str, object], cache_meta: dict[str, object]
         box=box.ROUNDED,
         border_style="cyan",
         padding=(0, 1),
-        height=TOP_PANEL_HEIGHT,
     )
 
 
@@ -144,12 +185,15 @@ def _build_language_panel(language_stats: list[dict[str, object]]) -> Panel:
     if waffle_rows % 2 != 0:
         waffle_rows += 1
     content = Group(
-        Align.center(
-            _waffle_chart(
-                segments,
-                rows=waffle_rows,
-                cols=WAFFLE_COLUMNS,
-            )
+        Padding(
+            Align.center(
+                _waffle_chart(
+                    segments,
+                    rows=waffle_rows,
+                    cols=WAFFLE_COLUMNS,
+                )
+            ),
+            (1, 0, 0, 0),
         ),
         _build_legend_table(segments, label_title="Language"),
     )
@@ -164,15 +208,65 @@ def _build_language_panel(language_stats: list[dict[str, object]]) -> Panel:
     )
 
 
+def _build_language_monitor_panel(language_stats: list[dict[str, object]]) -> Panel:
+    if not language_stats:
+        return Panel(
+            "No language metrics",
+            title="[bold cyan]monitor[/bold cyan]",
+            box=box.ROUNDED,
+            border_style="cyan",
+            padding=(0, 1),
+            height=TOP_PANEL_HEIGHT,
+        )
+
+    ordered = sorted(
+        language_stats,
+        key=lambda row: (-int(row.get("total_lines", 0)), str(row.get("language", ""))),
+    )
+    total_lines = sum(int(row.get("total_lines", 0) or 0) for row in ordered)
+    top = ordered[0]
+    top_lines = int(top.get("total_lines", 0) or 0)
+    top_pct = (top_lines / total_lines * 100.0) if total_lines else 0.0
+
+    table = Table.grid(expand=True, padding=(0, 1))
+    table.add_column(style="bold")
+    table.add_column(justify="right")
+    table.add_row("Dominant", str(top.get("language", "-")))
+    table.add_row("Top Share", f"{top_pct:.2f}%")
+    table.add_row("Languages", _fmt_int(len(ordered)))
+
+    density_table = Table(box=box.SIMPLE, expand=True, show_header=True, padding=(0, 1), collapse_padding=True)
+    density_table.add_column("Language", style="bold")
+    density_table.add_column("Density", justify="right")
+    density_table.add_column("Bar")
+
+    for row in ordered[:4]:
+        lines = int(row.get("total_lines", 0) or 0)
+        code = int(row.get("code_lines", 0) or 0)
+        density = (code / lines * 100.0) if lines else 0.0
+        density_table.add_row(
+            str(row.get("language", "-")),
+            f"{density:.1f}%",
+            _bar(density, width=10, style="bright_green"),
+        )
+
+    return Panel(
+        Group(table, density_table),
+        title="[bold cyan]monitor[/bold cyan]",
+        box=box.ROUNDED,
+        border_style="cyan",
+        padding=(0, 1),
+        height=TOP_PANEL_HEIGHT,
+    )
+
+
 def _build_largest_files_panel(largest_files: list[dict[str, object]]) -> Panel:
     table = Table(box=box.SIMPLE, expand=True, show_header=True, padding=(0, 1), collapse_padding=True)
-    table.add_column("Path", no_wrap=True, overflow="ellipsis")
-    table.add_column("Language")
-    table.add_column("Total", justify="right")
-    table.add_column("Size")
+    table.add_column("File", no_wrap=True, overflow="ellipsis")
+    table.add_column("Stats", no_wrap=True, width=16, overflow="ellipsis")
 
     if not largest_files:
-        table.add_row("No source file data", "-", "-", "-")
+        table.add_row("No source file data", "-")
         return Panel(
             table,
             title="[bold cyan]Largest Source Files[/bold cyan]",
@@ -181,20 +275,62 @@ def _build_largest_files_panel(largest_files: list[dict[str, object]]) -> Panel:
             padding=(0, 1),
         )
 
-    max_total = max(int(item.get("total_lines", 0)) for item in largest_files) or 1
     for row in largest_files[:10]:
         total = int(row.get("total_lines", 0))
-        ratio = total / max_total * 100
+        stats = _format_stats_cell(str(row.get("language", "-")), total)
         table.add_row(
-            _shorten_path(str(row.get("path", "-"))),
-            str(row.get("language", "-")),
-            _fmt_int(total),
-            _bar(ratio, width=14, style="bright_cyan"),
+            _format_path_cell(str(row.get("path", "-")), max_total_len=26, parent_max_len=14, name_max_len=11),
+            stats,
         )
 
     return Panel(
         table,
         title="[bold cyan]Largest Source Files[/bold cyan]",
+        box=box.ROUNDED,
+        border_style="cyan",
+        padding=(0, 1),
+    )
+
+
+def _build_structure_monitor_panel(
+    top_directories: list[dict[str, object]],
+    largest_files: list[dict[str, object]],
+) -> Panel:
+    total_lines = sum(int(item.get("total_lines", 0) or 0) for item in top_directories)
+    top_dir = top_directories[0] if top_directories else {}
+    top_dir_lines = int(top_dir.get("total_lines", 0) or 0)
+    top_dir_share = (top_dir_lines / total_lines * 100.0) if total_lines else 0.0
+
+    largest = largest_files[0] if largest_files else {}
+
+    summary = Table.grid(expand=True, padding=(0, 1))
+    summary.add_column(style="bold")
+    summary.add_column(justify="right")
+    summary.add_row("Top Dir", str(top_dir.get("path", "-")))
+    summary.add_row("Dir Share", f"{top_dir_share:.2f}%")
+    summary.add_row("Largest", _shorten_path(str(largest.get("path", "-")), max_len=22))
+    summary.add_row("Lines", _fmt_int(largest.get("total_lines", 0)))
+
+    directory_table = Table(box=box.SIMPLE, expand=True, show_header=True, padding=(0, 1), collapse_padding=True)
+    directory_table.add_column("Directory", style="bold")
+    directory_table.add_column("Files", justify="right")
+    directory_table.add_column("Share", justify="right")
+
+    for row in top_directories[:4]:
+        lines = int(row.get("total_lines", 0) or 0)
+        share = (lines / total_lines * 100.0) if total_lines else 0.0
+        directory_table.add_row(
+            str(row.get("path", "-")),
+            _fmt_int(row.get("files", 0)),
+            f"{share:.1f}%",
+        )
+
+    if not top_directories:
+        directory_table.add_row("-", "0", "0.0%")
+
+    return Panel(
+        Group(summary, directory_table),
+        title="[bold cyan]monitor[/bold cyan]",
         box=box.ROUNDED,
         border_style="cyan",
         padding=(0, 1),
@@ -318,6 +454,43 @@ def _shorten_path(path: str, max_len: int = 40) -> str:
         return path
     keep = max_len - 3
     return f"...{path[-keep:]}"
+
+
+def _shorten_middle(text: str, max_len: int) -> str:
+    if max_len <= 3:
+        return text[:max_len]
+    if len(text) <= max_len:
+        return text
+    head = max(2, (max_len - 3) // 2)
+    tail = max_len - 3 - head
+    return f"{text[:head]}...{text[-tail:]}"
+
+
+def _format_path_cell(path: str, max_total_len: int = 40, parent_max_len: int = 22, name_max_len: int = 16) -> Text:
+    normalized = path.replace("\\", "/")
+    parsed = PurePosixPath(normalized)
+    name = parsed.name or normalized
+    parent = "" if str(parsed.parent) == "." else str(parsed.parent)
+
+    name_display = _shorten_middle(name, name_max_len)
+    if not parent:
+        return Text(name_display, style="bold")
+
+    parent_limit = max(6, min(parent_max_len, max_total_len - len(name_display) - 1))
+    parent_display = _shorten_middle(parent, parent_limit)
+
+    cell = Text()
+    cell.append(f"{parent_display}/", style="dim")
+    cell.append(name_display, style="bold")
+    return cell
+
+
+def _format_stats_cell(language: str, total_lines: int) -> Table:
+    stats = Table.grid(expand=True, padding=0)
+    stats.add_column(ratio=1, no_wrap=True, overflow="ellipsis")
+    stats.add_column(justify="right", no_wrap=True)
+    stats.add_row(Text(language, style="cyan"), Text(_fmt_int(total_lines), style="bold"))
+    return stats
 
 
 def _bar(percent: float, *, width: int, style: str) -> Text:
