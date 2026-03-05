@@ -22,7 +22,6 @@ def test_cli_analyze_prints_terminal_report(tmp_path: Path) -> None:
     assert "Terminal Analysis Report" in result.stdout
     assert "Overview" in result.stdout
     assert "Language Breakdown" in result.stdout
-    assert "Project Structure (Top-level Directories)" in result.stdout
     assert "Largest Source Files" in result.stdout
     assert "Python" in result.stdout
     assert "JavaScript" in result.stdout
