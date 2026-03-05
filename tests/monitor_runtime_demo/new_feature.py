@@ -1,0 +1,2 @@
+def generated():
+    return 'ok'

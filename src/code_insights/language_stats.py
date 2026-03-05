@@ -59,14 +59,14 @@ def count_total_lines(text: str) -> int:
     return len(text.splitlines())
 
 
-def count_code_lines(language: str, text: str) -> int:
+def extract_code_lines(language: str, text: str) -> list[str]:
     if not text:
-        return 0
+        return []
 
     line_prefixes = LINE_COMMENT_PREFIXES.get(language, [])
     block_markers = BLOCK_COMMENT_MARKERS.get(language)
     in_block_comment = False
-    code_lines = 0
+    code_lines: list[str] = []
 
     for raw_line in text.splitlines():
         line = raw_line.strip()
@@ -101,6 +101,10 @@ def count_code_lines(language: str, text: str) -> int:
         if any(line.startswith(prefix) for prefix in line_prefixes):
             continue
 
-        code_lines += 1
+        code_lines.append(line)
 
     return code_lines
+
+
+def count_code_lines(language: str, text: str) -> int:
+    return len(extract_code_lines(language, text))

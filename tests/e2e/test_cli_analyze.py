@@ -19,9 +19,9 @@ def test_cli_analyze_prints_terminal_report(tmp_path: Path) -> None:
 
     assert result.exit_code == 0, result.stdout
     assert "Code Insights" in result.stdout
-    assert "Terminal Analysis Report" in result.stdout
-    assert "Overview" in result.stdout
-    assert "Language Breakdown" in result.stdout
-    assert "Largest Source Files" in result.stdout
+    assert "终端分析报告" in result.stdout
+    assert "总览" in result.stdout
+    assert "语言分布" in result.stdout
+    assert "最大源文件" in result.stdout
     assert "Python" in result.stdout
     assert "JavaScript" in result.stdout
